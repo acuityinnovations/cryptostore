@@ -40,6 +40,44 @@ def book_flatten(book: dict, timestamp: float, receipt_timestamp: float, delta: 
     return ret
 
 
+def l2_book_thicknesses(data: Tuple[dict]) -> Tuple[tuple, Generator]:
+    """
+    Take a tuple of dict (containing nested dict), and returns a generator
+    yielding flattened dicts, i.e. where each element is a dictionary with a
+    single row of book data.
+
+    Returns:
+      -  data (Generator[dict]):
+         L2 book generator:
+         ({'side': str, 'price': float, 'size': float, 'timestamp': float, 'receipt_timestamp': float}, {...}, ...)
+      -  keys (tuple):
+         Keys of the dictionaries are also returned in a tuple to prevent having to touch the generator only for
+         having this information (is used for instance for `parquet` and `artctic` backends).
+    """
+    keys = ('timestamp', 'receipt_timestamp', 'delta', 'side', 'thickness')
+
+    def _parse(data):
+        for trans in data:
+            delta = True if 'delta' in trans else False
+            ts, r_ts, _d = trans['timestamp'], trans['receipt_timestamp'], json.loads(trans['delta' if delta else 'book'])
+            res = {'timestamp': safe_float(ts), 'receipt_timestamp': safe_float(r_ts), 'delta': delta}
+            for side in (BID, ASK):
+                res['side'] = side
+                prices = list(map(float,_d[side].keys()))
+                sizes = list(map(float,_d[side].values()))
+                products = [p * s for p, s in zip(prices, sizes)]
+                if side == BID:
+                    best_price = prices[-1]
+                    weighted_avg = sum(products)/sum(prices)
+                    res['thickness'] = abs(best_price/(weighted_avg - best_price))
+                    yield res
+                else:
+                    best_price = prices[0]
+                    weighted_avg = sum(products)/sum(prices)
+                    res['thickness'] = abs(best_price/(weighted_avg - best_price))
+                    yield res
+    return keys, _parse(data)
+
 def l2_book_flatten(data: Tuple[dict]) -> Tuple[tuple, Generator]:
     """
     Take a tuple of dict (containing nested dict), and returns a generator

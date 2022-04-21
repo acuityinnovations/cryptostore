@@ -102,7 +102,7 @@ class Collector(Process):
             elif callback_type == TICKER:
                 cb[TICKER] = [ticker_cb(**kwargs)]
             elif callback_type == L2_BOOK:
-                cb[L2_BOOK] = [book_cb(key=L2_BOOK, snapshot_interval=feed_config.get('snapshot_interval', 1000), **kwargs)]
+                cb[L2_BOOK] = [book_cb(key=L2_BOOK, snapshot_interval=feed_config.get('snapshot_interval', 1000), snapshots_only=feed_config.get('snapshots_only', False), **kwargs)]
             elif callback_type == L3_BOOK:
                 cb[L3_BOOK] = [book_cb(key=L3_BOOK, snapshot_interval=feed_config.get('snapshot_interval', 1000), **kwargs)]
             elif callback_type == OPEN_INTEREST:
@@ -123,7 +123,7 @@ class Collector(Process):
                     elif callback_type == FUNDING:
                         cb[FUNDING].append(FundingZMQ(host=host, port=port))
                     elif callback_type == L2_BOOK:
-                        cb[L2_BOOK].append(BookZMQ(host=host, port=port, snapshot_interval=feed_config.get('snapshot_interval', 1000)))
+                        cb[L2_BOOK].append(BookZMQ(host=host, port=port, snapshot_interval=feed_config.get('snapshot_interval', 1000), snapshots_only=feed_config.get('snapshots_only', False)))
                     elif callback_type == L3_BOOK:
                         cb[L3_BOOK].append(BookZMQ(host=host, port=port, snapshot_interval=feed_config.get('snapshot_interval', 1000)))
                     elif callback_type == OPEN_INTEREST:
@@ -136,6 +136,4 @@ class Collector(Process):
             fh.add_feed(self.exchange, subscription={callback_type: self.exchange_config[callback_type]}, callbacks=cb, **feed_kwargs)
             LOG.info(f"Collector added feed handler - {self.exchange}({callback_type.upper()}, {feed_kwargs})")
 
-        # Signal handlers are set up inside FeedHandler objects
         fh.run()
-        LOG.info("Collector for %s on PID %d stopped", self.exchange, os.getpid())

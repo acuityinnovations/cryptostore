@@ -8,9 +8,9 @@ import logging
 from collections import defaultdict
 import time
 
-from cryptofeed.defines import TRADES, L2_BOOK, L3_BOOK, TICKER, FUNDING, OPEN_INTEREST, LIQUIDATIONS
+from cryptofeed.defines import TRADES, L2_BOOK, L3_BOOK, TICKER, FUNDING, OPEN_INTEREST, LIQUIDATIONS, CANDLES
 
-from cryptostore.aggregator.util import l2_book_flatten, l3_book_flatten
+from cryptostore.aggregator.util import l2_book_flatten, l3_book_flatten, l2_book_thicknesses
 from cryptostore.aggregator.cache import Cache
 from cryptostore.engines import StorageEngines
 
@@ -19,14 +19,14 @@ LOG = logging.getLogger('cryptostore')
 
 
 class Redis(Cache):
-    def __init__(self, ip=None, port=None, password=None, socket=None, del_after_read=True, flush=False, retention=None):
+    def __init__(self, ip=None, port=None, password=None, socket=None, del_after_read=True, flush=False, retention=None, db=0):
         self.del_after_read = del_after_read
         self.retention = retention
         self.last_id = {}
         self.ids = defaultdict(list)
         if ip and port and socket:
             raise ValueError("Cannot specify ip/port and socket for Redis")
-        self.conn = StorageEngines.redis.Redis(ip, port, password=password, unix_socket_path=socket, decode_responses=True)
+        self.conn = StorageEngines.redis.Redis(ip, port, password=password, unix_socket_path=socket, decode_responses=True, db=db)
         if flush:
             LOG.info('Flushing cache')
             self.conn.flushall()
@@ -60,7 +60,7 @@ class Redis(Cache):
         self.ids[key], updates = tuple(zip(*data[0][1]))
         self.last_id[key] = self.ids[key][-1]
         if dtype == L2_BOOK:
-            updates = l2_book_flatten(updates)
+            updates = l2_book_thicknesses(updates)
         elif dtype == L3_BOOK:
             updates = l3_book_flatten(updates)
         elif dtype in {TRADES, TICKER, OPEN_INTEREST, LIQUIDATIONS}:
@@ -77,7 +77,13 @@ class Redis(Cache):
                     except ValueError:
                         # ignore strings
                         pass
-
+        elif dtype == CANDLES:
+            for update in updates:
+                for k in update:
+                    if k == 'closed' and update[k] != 'True':
+                        updates_list = list(updates)
+                        updates_list.remove(update)
+                        updates = tuple(updates_list)
         return updates
 
     def delete(self, exchange, dtype, pair):
@@ -93,3 +99,34 @@ class Redis(Cache):
         else:
             LOG.info("%s: Removed no Redis entries", key)
         self.ids[key] = []
+
+    def read_df(self, exchange):
+
+        key = f'{exchange}'
+        data = self.conn.xread({key: '0-0' if key not in self.last_id else self.last_id[key]})
+
+        if len(data) == 0 or len(data[0][1]) == 0:
+            return []
+
+        LOG.info("%s: Read %d messages from Redis", key, len(data[0][1]))
+        self.ids[key], updates = tuple(zip(*data[0][1]))
+        self.last_id[key] = self.ids[key][-1]
+
+        return updates
+
+    def delete_df(self, exchange):
+        key = f'{exchange}'
+
+        if self.del_after_read:
+            if self.retention:
+                removal_ts = f'{int((time.time() * 1000) - (self.retention * 1000))}-0'
+                self.ids[key] = [i[0] for i in self.conn.xrange(key, max=removal_ts)]
+        if self.ids[key]:
+            self.conn.xdel(key, *self.ids[key])
+            LOG.info("%s: Removed %d entries through id %s", key, len(self.ids[key]), self.ids[key][-1])
+        else:
+            LOG.info("%s: Removed no Redis entries", key)
+        self.ids[key] = []
+
+    def add_dataframe(self, exchange, df):
+        self.conn.xadd(exchange, df.to_dict('records')[0])
